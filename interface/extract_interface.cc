@@ -355,7 +355,8 @@ static TargetInfo *create_target_info(CompilerInstance *Clang,
 
 static void create_diagnostics(CompilerInstance *Clang)
 {
-	Clang->createDiagnostics(0, NULL, construct_printer());
+    auto VFS = llvm::vfs::getRealFileSystem();
+    Clang->createDiagnostics(*VFS, construct_printer(), /*ShouldOwnClient=*/false);
 }
 
 #else
