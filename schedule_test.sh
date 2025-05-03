@@ -1,9 +1,9 @@
 #!/bin/sh
 
-EXEEXT=@EXEEXT@
-GREP=@GREP@
-SED=@SED@
-srcdir=@srcdir@
+EXEEXT=
+GREP=
+SED=
+srcdir=
 
 failed=0
 

@@ -12,6 +12,25 @@
 #include <isl/ctx.h>
 #include "isl_config.h"
 
+/* Include proper headers and define ffs fallbacks based on availability */
+#if HAVE_DECL___BUILTIN_FFS
+#define ffs __builtin_ffs
+#elif HAVE_DECL_FFS
+#include <strings.h>
+#elif HAVE_DECL__BITSCANFORWARD
+#include <intrin.h>
+/* Use _BitScanForward as fallback implementation for ffs */
+static int ffs(int x) {
+    unsigned long index;
+    if (!x)
+        return 0;
+    _BitScanForward(&index, x);
+    return index + 1;
+}
+#else
+#error "No ffs implementation available"
+#endif
+
 uint32_t isl_hash_string(uint32_t hash, const char *s)
 {
 	for (; *s; s++)
@@ -49,7 +68,7 @@ int isl_hash_table_init(struct isl_ctx *ctx, struct isl_hash_table *table,
 
 	if (min_size < 2)
 		min_size = 2;
-	table->bits = ffs(round_up(4 * (min_size + 1) / 3 - 1)) - 1;
+	table->bits = ffs((int)round_up(4 * (min_size + 1) / 3 - 1)) - 1;
 	table->n = 0;
 
 	size = 1 << table->bits;

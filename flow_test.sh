@@ -1,7 +1,7 @@
 #!/bin/sh
 
-EXEEXT=@EXEEXT@
-srcdir=@srcdir@
+EXEEXT=
+srcdir=
 
 failed=0
 

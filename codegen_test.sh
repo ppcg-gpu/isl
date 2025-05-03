@@ -1,9 +1,9 @@
 #!/bin/sh
 
-DIFF="@DIFF@"
-DIFF_OPTIONS="@DIFF_OPTIONS@"
-EXEEXT=@EXEEXT@
-srcdir=@srcdir@
+DIFF=""
+DIFF_OPTIONS=""
+EXEEXT=
+srcdir=
 
 failed=0
 

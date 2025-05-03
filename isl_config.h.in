@@ -1,0 +1,48 @@
+/* isl_config.h.in - Template for isl_config.h (CMake) */
+
+#ifndef ISL_CONFIG_H
+#define ISL_CONFIG_H
+
+/* Define to 1 if you have the declaration of `ffs', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL_FFS
+
+/* Define to 1 if you have the declaration of `__builtin_ffs', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL___BUILTIN_FFS
+
+/* Define to 1 if you have the declaration of `_BitScanForward', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL__BITSCANFORWARD
+
+/* Define to 1 if you have the declaration of `strcasecmp', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL_STRCASECMP
+
+/* Define to 1 if you have the declaration of `strncasecmp', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL_STRNCASECMP
+
+/* Define to 1 if you have the declaration of `_stricmp', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL__STRICMP
+
+/* Define to 1 if you have the declaration of `_strnicmp', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL__STRNICMP
+
+/* Define to 1 if you have the declaration of `snprintf', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL_SNPRINTF
+
+/* Define to 1 if you have the declaration of `_snprintf', and to 0 if you don't. */
+#cmakedefine01 HAVE_DECL__SNPRINTF
+
+/* Define to 1 if you have the `__attribute__' function attribute */
+#cmakedefine HAVE___ATTRIBUTE__ 1
+
+/* Define if GCC supports __attribute__((unused)) */
+#cmakedefine GCC_WARN_UNUSED_RESULT @GCC_WARN_UNUSED_RESULT@
+
+/* Define to use small integer optimization for IMATH */
+#cmakedefine USE_SMALL_INT_OPT 1
+
+/* Version number of package */
+#define VERSION "@VERSION@"
+
+/* Include isl_config_post.h */
+#include <isl_config_post.h>
+
+#endif /* ISL_CONFIG_H */

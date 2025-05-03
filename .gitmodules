@@ -1,3 +1,6 @@
-[submodule "imath"]
-	path = imath
-	url = https://github.com/creachadair/imath.git
+[submodule "ThirdParty/imath"]
+	path = ThirdParty/imath
+	url = https://github.com/ppcg-gpu/imath.git
+[submodule "ThirdParty/extract_interface"]
+	path = ThirdParty/extract_interface
+	url = https://github.com/ppcg-gpu/extract_interface.git
