@@ -10,6 +10,10 @@
 #ifndef ISL_TAB_H
 #define ISL_TAB_H
 
+#ifndef WARN_UNUSED
+#define WARN_UNUSED
+#endif
+
 #include "isl_int.h"
 #include <isl/lp.h>
 #include <isl/map.h>

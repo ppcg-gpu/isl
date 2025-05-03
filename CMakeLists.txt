@@ -10,7 +10,6 @@ include(CMakePushCheckState)
 
 # Options that match configure.ac options
 option(SMALL_INT_OPT "Enable small integer optimization for IMATH" OFF)
-option(WITH_INT "Which package to use to represent multi-precision integers" "imath")
 
 # Set C standard
 set(CMAKE_C_STANDARD 99)
@@ -277,12 +276,7 @@ target_include_directories(isl PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Add compile definitions based on configuration
-if(WITH_INT STREQUAL "gmp")
-    target_compile_definitions(isl PUBLIC USE_GMP_FOR_MP)
-else()
-    target_compile_definitions(isl PUBLIC USE_IMATH_FOR_MP)
-endif()
+target_compile_definitions(isl PUBLIC USE_IMATH_FOR_MP)
 
 target_link_libraries(isl PUBLIC imath)
 
