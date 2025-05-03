@@ -51,14 +51,14 @@ static char *get_filename(isl_ctx *ctx, const char *name, const char *suffix) {
 	int length;
 	char *pattern = "%s/test_inputs/%s.%s";
 
-	length = strlen(pattern) - 6 + strlen(srcdir) + strlen(name)
+	length = strlen(pattern) - 6 + strlen(isl_srcdir) + strlen(name)
 		+ strlen(suffix) + 1;
 	filename = isl_alloc_array(ctx, char, length);
 
 	if (!filename)
 		return NULL;
 
-	sprintf(filename, pattern, srcdir, name, suffix);
+	sprintf(filename, pattern, isl_srcdir, name, suffix);
 
 	return filename;
 }
