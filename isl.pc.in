@@ -1,11 +1,11 @@
-prefix=@CMAKE_INSTALL_PREFIX@
+prefix=@PKGCONFIG_PREFIX@
 exec_prefix=${prefix}
-bindir=@PKGCONFIG_BINDIR@
-libdir=@PKGCONFIG_LIBDIR@
-datarootdir=@PKGCONFIG_DATAROOTDIR@
-datadir=@PKGCONFIG_DATADIR@
-sysconfdir=@PKGCONFIG_SYSCONFDIR@
-includedir=@PKGCONFIG_INCLUDEDIR@
+bindir=${prefix}/@CMAKE_INSTALL_BINDIR@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+datarootdir=${prefix}/@CMAKE_INSTALL_DATAROOTDIR@
+datadir=${prefix}/@CMAKE_INSTALL_DATADIR@
+sysconfdir=${prefix}/@CMAKE_INSTALL_SYSCONFDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 package=@PROJECT_NAME@
 suffix=
 

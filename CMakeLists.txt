@@ -3,6 +3,10 @@ project(isl VERSION 0.27 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
+# Establish BUILD_TESTING before the subprojects, so that turning testing
+# off reaches all of them.
+include(CTest)
+
 # The installed programs and libraries have to find each other inside the
 # installation prefix rather than picking up whatever the system provides.
 if(NOT DEFINED CMAKE_INSTALL_RPATH)
@@ -497,26 +501,26 @@ install(TARGETS isl
 
 # pkg-config metadata, the replacement for AX_CREATE_PKGCONFIG_INFO.  The
 # fields reproduce what that macro emitted: the imath backend contributes no
-# extra libraries or include paths, so Libs and Cflags only mention isl itself.
+# extra libraries or include paths, so Libs and Cflags only mention isl
+# itself.
 #
-# Everything under the prefix is expressed relative to it, so retargeting
-# the file at a different location is a matter of changing prefix alone.
-# The prefix itself is the one the build was configured with, as it was
-# with configure; --install --prefix is not reflected here.
-foreach(dir BIN LIB DATAROOT DATA SYSCONF INCLUDE)
-    if(IS_ABSOLUTE "${CMAKE_INSTALL_${dir}DIR}")
-        set(PKGCONFIG_${dir}DIR "${CMAKE_INSTALL_${dir}DIR}")
-    else()
-        set(PKGCONFIG_${dir}DIR "\${prefix}/${CMAKE_INSTALL_${dir}DIR}")
-    endif()
-endforeach()
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/isl.pc.in
-    ${CMAKE_CURRENT_BINARY_DIR}/isl.pc
-    @ONLY
-)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/isl.pc
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+# The file is written during installation rather than during configuration,
+# because cmake --install --prefix chooses the prefix at that point, and a
+# file naming the configured one would send consumers to a different tree.
+set(ISL_PC ${CMAKE_CURRENT_BINARY_DIR}/isl.pc)
+install(CODE "
+    set(PKGCONFIG_PREFIX \"\${CMAKE_INSTALL_PREFIX}\")
+    set(PROJECT_NAME \"${PROJECT_NAME}\")
+    set(PROJECT_VERSION \"${PROJECT_VERSION}\")
+    set(CMAKE_INSTALL_BINDIR \"${CMAKE_INSTALL_BINDIR}\")
+    set(CMAKE_INSTALL_LIBDIR \"${CMAKE_INSTALL_LIBDIR}\")
+    set(CMAKE_INSTALL_DATAROOTDIR \"${CMAKE_INSTALL_DATAROOTDIR}\")
+    set(CMAKE_INSTALL_DATADIR \"${CMAKE_INSTALL_DATADIR}\")
+    set(CMAKE_INSTALL_SYSCONFDIR \"${CMAKE_INSTALL_SYSCONFDIR}\")
+    set(CMAKE_INSTALL_INCLUDEDIR \"${CMAKE_INSTALL_INCLUDEDIR}\")
+    configure_file(\"${CMAKE_CURRENT_SOURCE_DIR}/isl.pc.in\" \"${ISL_PC}\" @ONLY)
+")
+install(FILES ${ISL_PC} DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 # The GDB pretty printer is auto-loaded from a file named after the object
 # file GDB actually maps, so it has to carry the full versioned library name.
@@ -589,10 +593,7 @@ add_custom_command(
 )
 add_custom_target(gen_isl_py ALL DEPENDS ${INTERFACE_DIR}/isl.py)
 
-# BUILD_TESTING comes from CTest and has to actually switch the tests off,
-# so everything below is registered only when it is on.
-include(CTest)
-
+# Everything below is registered only when testing is on.
 if(BUILD_TESTING)
 
 # Test programs that check the library itself
