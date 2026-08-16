@@ -1,5 +1,13 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 project(isl VERSION 0.27 LANGUAGES C CXX)
+
+include(GNUInstallDirs)
+
+# The installed programs and libraries have to find each other inside the
+# installation prefix rather than picking up whatever the system provides.
+if(NOT DEFINED CMAKE_INSTALL_RPATH)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
 
 # Include required CMake modules for configuration checks
 include(CheckIncludeFile)
@@ -214,7 +222,6 @@ set(ISL_SOURCES
     isl_ilp.c
     isl_imath.c
     isl_input.c
-    isl_list_private.h
     isl_local.c
     isl_local_space.c
     isl_lp.c
@@ -258,12 +265,19 @@ set(ISL_SOURCES
     isl_tarjan.c
     isl_transitive_closure.c
     isl_union_map.c
-    isl_union_set_private.h
     isl_val.c
     isl_vec.c
     isl_version.c
     isl_vertices.c
 )
+
+# The multiple precision backend.  isl is built against imath here, either
+# through the plain interface or through the small integer optimisation.
+if(SMALL_INT_OPT)
+    list(APPEND ISL_SOURCES isl_int_sioimath.c isl_val_sioimath.c)
+else()
+    list(APPEND ISL_SOURCES isl_val_imath.c)
+endif()
 
 # Add the main library
 add_library(isl SHARED ${ISL_SOURCES})
@@ -276,9 +290,25 @@ target_include_directories(isl PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# The autotools build passed "-version-info 27:0:4" to libtool.  Libtool does
+# not use current:revision:age as a version triple: the soname number is
+# current - age (23) and the file it points at is named
+# libisl.so.<current-age>.<age>.<revision>, i.e. libisl.so.23.4.0.  Anything
+# else here would silently break every binary already linked against isl.
+set_target_properties(isl PROPERTIES
+    VERSION 23.4.0
+    SOVERSION 23
+)
+
 target_compile_definitions(isl PUBLIC USE_IMATH_FOR_MP)
 
 target_link_libraries(isl PUBLIC imath)
+
+# A missing source file would otherwise only show up when some program
+# happens to use one of the symbols it defines.
+if(NOT APPLE AND NOT WIN32)
+    target_link_options(isl PRIVATE "LINKER:--no-undefined")
+endif()
 
 # Add test_imath executable
 add_executable(isl_test_imath isl_test_imath.c)
@@ -294,7 +324,6 @@ set_target_properties(isl_test2 PROPERTIES CXX_STANDARD 11)
 add_executable(isl_test_cpp isl_test_cpp.cc include/isl/cpp.h)
 target_link_libraries(isl_test_cpp isl)
 set_target_properties(isl_test_cpp PROPERTIES CXX_STANDARD 11)
-set_source_files_properties(isl_test_cpp.cc PROPERTIES COMPILE_OPTIONS "-UCOMPILE_ERROR")
 
 add_executable(isl_test_cpp_checked isl_test_cpp-checked.cc include/isl/cpp-checked.h)
 target_link_libraries(isl_test_cpp_checked isl)
@@ -365,115 +394,243 @@ target_link_libraries(isl_schedule_cmp isl)
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/.gen)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
-add_custom_command(
-    OUTPUT ${GEN_DIR}/isl.py.core
-    COMMAND $<TARGET_FILE:extract_interface> --language=python -I. -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/include -Iinclude ${CMAKE_CURRENT_SOURCE_DIR}/all.h > ${GEN_DIR}/isl.py.core
-    DEPENDS extract_interface all.h
+set(GENERATE_INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateInterface.cmake)
+
+# extract_interface parses all.h, which pulls in the public headers from both
+# the source and the build tree.
+set(INTERFACE_INCLUDES
+    -I${CMAKE_CURRENT_SOURCE_DIR}
+    -I${CMAKE_CURRENT_SOURCE_DIR}/include
+    -I${CMAKE_CURRENT_BINARY_DIR}
+    -I${CMAKE_CURRENT_BINARY_DIR}/include
+)
+list(JOIN INTERFACE_INCLUDES "|" INTERFACE_INCLUDES_ARG)
+
+# Assemble one of the generated interface files.
+#
+#   name     base name of the generated file in .gen
+#   language value passed to extract_interface --language
+#   prepend  files placed before the generated body
+#   append   files placed after the generated body
+function(add_interface_target name language prepend append)
+    list(JOIN prepend "|" prepend_arg)
+    list(JOIN append "|" append_arg)
+    add_custom_command(
+        OUTPUT ${GEN_DIR}/${name}
+        COMMAND ${CMAKE_COMMAND}
+            -DOUTPUT=${GEN_DIR}/${name}
+            -DPREPEND=${prepend_arg}
+            -DAPPEND=${append_arg}
+            -DGENERATOR=$<TARGET_FILE:extract_interface>
+            "-DGENERATOR_ARGS=--language=${language}|${INTERFACE_INCLUDES_ARG}|${CMAKE_CURRENT_SOURCE_DIR}/all.h"
+            -DWORKDIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${GENERATE_INTERFACE}
+        DEPENDS extract_interface all.h ${prepend} ${append} ${GENERATE_INTERFACE}
+        COMMENT "Generating .gen/${name}"
+        VERBATIM
+    )
+endfunction()
+
+add_interface_target(isl.py.core python "" "")
+
+# The C++ interface headers under include/isl are kept under version control,
+# but they are pure generator output.  Building them here and comparing them
+# against the checked-in copies (see the *_up_to_date tests below) is what
+# keeps the cpp, cpp-checked, cpp-checked-conversion and template-cpp backends
+# of extract_interface exercised at all; without it they are dead code.  The
+# targets are in ALL because ctest cannot depend on a build step.
+add_interface_target(cpp.h cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp.h.top;${CMAKE_CURRENT_SOURCE_DIR}/all.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp.h.bot")
+add_custom_target(gen_cpp_h ALL DEPENDS ${GEN_DIR}/cpp.h)
+
+add_interface_target(cpp-checked.h cpp-checked
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp-checked.h.top;${CMAKE_CURRENT_SOURCE_DIR}/all.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp-checked.h.bot")
+add_custom_target(gen_cpp_checked_h ALL DEPENDS ${GEN_DIR}/cpp-checked.h)
+
+add_interface_target(cpp-checked-conversion.h cpp-checked-conversion
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp-checked-conversion.h.top"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/cpp-checked-conversion.h.bot")
+add_custom_target(gen_cpp_checked_conversion_h ALL
+    DEPENDS ${GEN_DIR}/cpp-checked-conversion.h)
+
+add_interface_target(typed_cpp.h template-cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/typed_cpp.h.top"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/typed_cpp.h.bot")
+add_custom_target(gen_typed_cpp_h ALL DEPENDS ${GEN_DIR}/typed_cpp.h)
+
+# The C++ interface headers are kept under version control, so refreshing them
+# is an explicit maintainer action.  The build itself never writes into the
+# source tree.
+add_custom_target(update_cpp_headers
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${GEN_DIR}/cpp.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp.h
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${GEN_DIR}/cpp-checked.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked.h
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${GEN_DIR}/cpp-checked-conversion.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked-conversion.h
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${GEN_DIR}/typed_cpp.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/typed_cpp.h
+    DEPENDS ${GEN_DIR}/cpp.h ${GEN_DIR}/cpp-checked.h
+            ${GEN_DIR}/cpp-checked-conversion.h ${GEN_DIR}/typed_cpp.h
+    COMMENT "Refreshing the checked-in C++ interface headers"
+)
+
+# Install headers.  include/isl/hmap_templ.c is a header in all but name: the
+# generated hash map headers include it textually, so a consumer that includes
+# isl/id_to_ast_expr.h needs it.  include/isl/val_gmp.h on the other hand
+# declares the GMP conversion functions, which do not exist in a build against
+# imath, so installing it would advertise an interface that is not there.
+install(DIRECTORY include/isl/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isl
+    FILES_MATCHING
+        PATTERN "val_gmp.h" EXCLUDE
+        PATTERN "*.h"
+        PATTERN "hmap_templ.c")
+
+install(TARGETS isl
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# pkg-config metadata, the replacement for AX_CREATE_PKGCONFIG_INFO.  The
+# fields reproduce what that macro emitted: the imath backend contributes no
+# extra libraries or include paths, so Libs and Cflags only mention isl itself.
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/isl.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/isl.pc
+    @ONLY
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/isl.pc
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+# The GDB pretty printer is auto-loaded from a file named after the object
+# file GDB actually maps, so it has to carry the full versioned library name.
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/libisl-gdb.py
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RENAME $<TARGET_FILE_NAME:isl>-gdb.py)
+
+# Files that the autotools build used to create in the source tree are
+# generated into the build tree instead.  They are picked up ahead of any
+# leftovers because the build directory comes first on the include path.
+set(GEN_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/include/isl)
+
+# include/isl/stdint.h, the replacement for AX_CREATE_STDINT_H
+file(GENERATE
+    OUTPUT ${GEN_INCLUDE_DIR}/stdint.h
+    CONTENT "#pragma once\n#include <stdint.h>\n"
+)
+install(FILES ${GEN_INCLUDE_DIR}/stdint.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/isl)
+
+target_include_directories(isl PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+)
+
+# isl_srcdir.c, textually included by isl_test to locate its input files
+file(GENERATE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/isl_srcdir.c
+    CONTENT "const char *isl_srcdir = \"${CMAKE_CURRENT_SOURCE_DIR}\";\n"
+)
+
+# gitversion.h, reported by isl_version()
+execute_process(
+    COMMAND git describe --always --dirty
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating .gen/isl.py.core"
+    OUTPUT_VARIABLE GIT_HEAD_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE GIT_DESCRIBE_RESULT
 )
-
-add_custom_target(gen_isl_py_core DEPENDS ${GEN_DIR}/isl.py.core)
-
-# Example for C++ header generation (cpp.h)
-add_custom_command(
-    OUTPUT ${GEN_DIR}/cpp.h
-    COMMAND bash -c "cat cpp/cpp.h.top all.h && $<TARGET_FILE:extract_interface> --language=cpp -I. -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/include -Iinclude ${CMAKE_CURRENT_SOURCE_DIR}/all.h && cat cpp/cpp.h.bot > ${GEN_DIR}/cpp.h"
-    DEPENDS extract_interface all.h cpp/cpp.h.top cpp/cpp.h.bot
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating .gen/cpp.h"
-)
-add_custom_target(gen_cpp_h DEPENDS ${GEN_DIR}/cpp.h)
-
-# C++ checked header generation (cpp-checked.h)
-add_custom_command(
-    OUTPUT ${GEN_DIR}/cpp-checked.h
-    COMMAND bash -c "cat cpp/cpp-checked.h.top all.h && $<TARGET_FILE:extract_interface> --language=cpp-checked -I. -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/include -Iinclude ${CMAKE_CURRENT_SOURCE_DIR}/all.h && cat cpp/cpp-checked.h.bot > ${GEN_DIR}/cpp-checked.h"
-    DEPENDS extract_interface all.h cpp/cpp-checked.h.top cpp/cpp-checked.h.bot
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating .gen/cpp-checked.h"
-)
-add_custom_target(gen_cpp_checked_h DEPENDS ${GEN_DIR}/cpp-checked.h)
-
-# C++ checked conversion header generation (cpp-checked-conversion.h)
-add_custom_command(
-    OUTPUT ${GEN_DIR}/cpp-checked-conversion.h
-    COMMAND bash -c "cat cpp/cpp-checked-conversion.h.top && $<TARGET_FILE:extract_interface> --language=cpp-checked-conversion -I. -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/include -Iinclude ${CMAKE_CURRENT_SOURCE_DIR}/all.h && cat cpp/cpp-checked-conversion.h.bot > ${GEN_DIR}/cpp-checked-conversion.h"
-    DEPENDS extract_interface all.h cpp/cpp-checked-conversion.h.top cpp/cpp-checked-conversion.h.bot
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating .gen/cpp-checked-conversion.h"
-)
-add_custom_target(gen_cpp_checked_conversion_h DEPENDS ${GEN_DIR}/cpp-checked-conversion.h)
-
-# Typed C++ header generation (typed_cpp.h)
-add_custom_command(
-    OUTPUT ${GEN_DIR}/typed_cpp.h
-    COMMAND bash -c "cat cpp/typed_cpp.h.top && $<TARGET_FILE:extract_interface> --language=template-cpp -I. -I${CMAKE_CURRENT_SOURCE_DIR} -I${CMAKE_CURRENT_SOURCE_DIR}/include -Iinclude ${CMAKE_CURRENT_SOURCE_DIR}/all.h && cat cpp/typed_cpp.h.bot > ${GEN_DIR}/typed_cpp.h"
-    DEPENDS extract_interface all.h cpp/typed_cpp.h.top cpp/typed_cpp.h.bot
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Generating .gen/typed_cpp.h"
-)
-add_custom_target(gen_typed_cpp_h DEPENDS ${GEN_DIR}/typed_cpp.h)
-
-# Optionally, copy generated headers to include/isl/
-add_custom_command(
-    TARGET gen_cpp_h POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${GEN_DIR}/cpp.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp.h
-)
-add_custom_command(
-    TARGET gen_cpp_checked_h POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${GEN_DIR}/cpp-checked.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked.h
-)
-add_custom_command(
-    TARGET gen_cpp_checked_conversion_h POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${GEN_DIR}/cpp-checked-conversion.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked-conversion.h
-)
-add_custom_command(
-    TARGET gen_typed_cpp_h POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${GEN_DIR}/typed_cpp.h ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/typed_cpp.h
-)
-
-# Install headers
-install(DIRECTORY include/isl/ DESTINATION include/isl FILES_MATCHING PATTERN "*.h")
-
-# Generate include/isl/stdint.h if missing (mimic AX_CREATE_STDINT_H)
-include(CheckIncludeFile)
-include(CheckTypeSize)
-
-set(ISL_STDINT_H ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/stdint.h)
-if(NOT EXISTS ${ISL_STDINT_H})
-    file(WRITE ${ISL_STDINT_H} "#pragma once\n#include <stdint.h>\n")
+if(NOT GIT_DESCRIBE_RESULT EQUAL 0 OR NOT GIT_HEAD_VERSION)
+    set(GIT_HEAD_VERSION "isl-${PROJECT_VERSION}")
 endif()
+file(GENERATE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gitversion.h
+    CONTENT "#define GIT_HEAD_ID \"${GIT_HEAD_VERSION}\"\n"
+)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Generate gitversion.h if missing
-set(GITVERSION_H ${CMAKE_CURRENT_SOURCE_DIR}/gitversion.h)
-if(NOT EXISTS ${GITVERSION_H})
-    file(WRITE ${GITVERSION_H} "#define GIT_HEAD_ID \"unknown\"\n")
-endif()
-
-# Generate isl_srcdir.c if missing
-set(ISL_SRCDIR_C ${CMAKE_CURRENT_SOURCE_DIR}/isl_srcdir.c)
-if(NOT EXISTS ${ISL_SRCDIR_C})
-    file(WRITE ${ISL_SRCDIR_C} "const char *isl_srcdir = \".\";\n")
-endif()
-
-set(INTERFACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/interface)
+# Python interface
+set(INTERFACE_DIR ${CMAKE_CURRENT_BINARY_DIR}/interface)
 file(MAKE_DIRECTORY ${INTERFACE_DIR})
+
+file(GENERATE
+    OUTPUT ${INTERFACE_DIR}/isldlname.py
+    CONTENT "isl_dlname = \"$<TARGET_FILE_NAME:isl>\"\n"
+)
+
 add_custom_command(
     OUTPUT ${INTERFACE_DIR}/isl.py
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${INTERFACE_DIR}
-    COMMAND bash -c "cat python/isl.py.top ${GEN_DIR}/isl.py.core > ${INTERFACE_DIR}/isl.py"
-    DEPENDS python/isl.py.top ${GEN_DIR}/isl.py.core
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND}
+        -DOUTPUT=${INTERFACE_DIR}/isl.py
+        "-DPREPEND=${INTERFACE_DIR}/isldlname.py|${CMAKE_CURRENT_SOURCE_DIR}/python/isl.py.top|${GEN_DIR}/isl.py.core"
+        -P ${GENERATE_INTERFACE}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/python/isl.py.top
+            ${GEN_DIR}/isl.py.core
+            ${INTERFACE_DIR}/isldlname.py
+            ${GENERATE_INTERFACE}
     COMMENT "Generating interface/isl.py"
+    VERBATIM
 )
-add_custom_target(gen_isl_py DEPENDS ${INTERFACE_DIR}/isl.py)
+add_custom_target(gen_isl_py ALL DEPENDS ${INTERFACE_DIR}/isl.py)
 
 enable_testing()
 
-# Python tests for ISL
+# Test programs that check the library itself
+add_test(NAME isl_test COMMAND $<TARGET_FILE:isl_test>)
+add_test(NAME isl_test2 COMMAND $<TARGET_FILE:isl_test2>)
+add_test(NAME isl_test_int COMMAND $<TARGET_FILE:isl_test_int>)
+add_test(NAME isl_test_imath COMMAND $<TARGET_FILE:isl_test_imath>)
+add_test(NAME isl_test_cpp COMMAND $<TARGET_FILE:isl_test_cpp>)
+add_test(NAME isl_test_cpp_checked COMMAND $<TARGET_FILE:isl_test_cpp_checked>)
+add_test(NAME isl_test_cpp_checked_conversion
+    COMMAND $<TARGET_FILE:isl_test_cpp_checked_conversion>)
+add_test(NAME isl_test_cpp17 COMMAND $<TARGET_FILE:isl_test_cpp17>)
+add_test(NAME isl_test_cpp17_checked COMMAND $<TARGET_FILE:isl_test_cpp17_checked>)
+
+# isl_test_cpp.cc is expected to fail to compile with COMPILE_ERROR defined.
+# The include path is taken from the isl target itself and written to a
+# response file, so it cannot go stale: a hand written -I list would sooner or
+# later make this test "pass" because a header is missing rather than because
+# of the intended intersect_range error.  Only that one translation unit is
+# compiled, so an unrelated build failure cannot make the test pass either;
+# isl_test_cpp above is the positive control that the same file does compile
+# without the macro.  The empty element comes from $<INSTALL_INTERFACE:include>,
+# which is not part of the build tree include path.
+set(CPP_FAILED_RSP ${CMAKE_CURRENT_BINARY_DIR}/isl_test_cpp_failed.rsp)
+file(GENERATE
+    OUTPUT ${CPP_FAILED_RSP}
+    CONTENT "$<JOIN:$<LIST:TRANSFORM,$<LIST:FILTER,$<TARGET_PROPERTY:isl,INCLUDE_DIRECTORIES>,EXCLUDE,^$>,PREPEND,-I>,\n>\n"
+)
+
+add_test(NAME isl_test_cpp_failed
+    COMMAND ${CMAKE_CXX_COMPILER}
+        -std=c++11
+        -DCOMPILE_ERROR
+        @${CPP_FAILED_RSP}
+        -c ${CMAKE_CURRENT_SOURCE_DIR}/isl_test_cpp.cc
+        -o ${CMAKE_CURRENT_BINARY_DIR}/isl_test_cpp_failed.o
+)
+set_tests_properties(isl_test_cpp_failed PROPERTIES WILL_FAIL TRUE)
+
+# The checked-in C++ interface headers must stay identical to what
+# extract_interface produces, and running the comparison is what exercises the
+# generator backends in the first place.  The generated files are built by ALL,
+# so they are always present by the time ctest runs.
+foreach(generated IN ITEMS cpp.h cpp-checked.h cpp-checked-conversion.h typed_cpp.h)
+    string(REPLACE "." "_" test_suffix ${generated})
+    string(REPLACE "-" "_" test_suffix ${test_suffix})
+    add_test(NAME interface_${test_suffix}_up_to_date
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            ${GEN_DIR}/${generated}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/${generated}
+    )
+endforeach()
+
+# Python driven tests around the command line tools
 add_test(NAME bound_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/bound_test.py
         --srcdir=${CMAKE_CURRENT_SOURCE_DIR}
@@ -486,11 +643,31 @@ add_test(NAME pip_test
         --isl-pip=$<TARGET_FILE:isl_pip>
 )
 
+# The reference outputs under test_inputs/codegen differ from the generated
+# ones in indentation, so the comparison has to be whitespace insensitive, as
+# it was in the autotools codegen_test.sh ("diff $DIFF_OPTIONS -w").  The
+# context option is probed the way ISL_DETECT_DIFF_OPTIONS used to probe it,
+# so that a failure prints the offending hunk instead of nothing at all.
+find_program(DIFF_EXECUTABLE diff REQUIRED)
+foreach(option -u -c)
+    execute_process(
+        COMMAND ${DIFF_EXECUTABLE} ${option} /dev/null /dev/null
+        RESULT_VARIABLE diff_option_result
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(diff_option_result EQUAL 0)
+        set(DIFF_CONTEXT_OPTION ${option})
+        break()
+    endif()
+endforeach()
+
 add_test(NAME codegen_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/codegen_test.py
         --srcdir=${CMAKE_CURRENT_SOURCE_DIR}
         --isl-codegen=$<TARGET_FILE:isl_codegen>
-        --diff="${CMAKE_COMMAND} -E compare_files"
+        # codegen_test.py splits this with shlex, so quote the path.
+        "--diff='${DIFF_EXECUTABLE}' ${DIFF_CONTEXT_OPTION} -w"
 )
 
 add_test(NAME schedule_test
@@ -515,6 +692,9 @@ endif()
 
 # Apply environment variables to all tests
 set_tests_properties(
+    isl_test isl_test2 isl_test_int isl_test_imath
+    isl_test_cpp isl_test_cpp_checked isl_test_cpp_checked_conversion
+    isl_test_cpp17 isl_test_cpp17_checked
     bound_test pip_test codegen_test schedule_test flow_test
     PROPERTIES ENVIRONMENT "${TEST_ENV_VARS}"
 )
@@ -524,14 +704,5 @@ add_test(NAME isl_test_python.py
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/isl_test_python.py
 )
 set_tests_properties(isl_test_python.py PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/interface;ISL_DYLD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/.libs;LD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/.libs:$ENV{LD_LIBRARY_PATH}"
-)
-
-# Install generated C++ interface headers and Python interface if present
-install(FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/cpp-checked-conversion.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/isl/typed_cpp.h
-    DESTINATION include/isl
+    ENVIRONMENT "PYTHONPATH=${INTERFACE_DIR};ISL_DYLD_LIBRARY_PATH=$<TARGET_FILE_DIR:isl>;LD_LIBRARY_PATH=$<TARGET_FILE_DIR:isl>:$ENV{LD_LIBRARY_PATH}"
 )

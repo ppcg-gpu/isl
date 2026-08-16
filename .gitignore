@@ -32,7 +32,6 @@ install-sh
 isl-uninstalled.pc
 isl-uninstalled.sh
 isl.pc
-isl.pc.in
 isl_bound
 isl_cat
 isl_closure
@@ -58,3 +57,5 @@ test-driver
 isl_srcdir.c
 bound_test.sh
 pip_test.sh
+build/
+.vscode/

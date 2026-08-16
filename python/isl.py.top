@@ -45,5 +45,9 @@ isl.isl_id_set_free_user.restype = c_void_p
 isl.isl_id_set_free_user.argtypes = [c_void_p, c_void_p]
 isl.isl_id_get_free_user.restype = c_void_p
 isl.isl_id_get_free_user.argtypes = [c_void_p]
-isl.isl_id_get_user.restype = py_object
+# isl_id_get_user returns a borrowed pointer, so it must not be declared
+# as returning a py_object: ctypes would treat the result as a reference
+# it owns and release it, leaving the user object with too low a reference
+# count.  The pointer is turned into an object by id.user() instead.
+isl.isl_id_get_user.restype = c_void_p
 isl.isl_id_get_user.argtypes = [c_void_p]

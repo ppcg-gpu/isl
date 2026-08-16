@@ -1,0 +1,17 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=@CMAKE_INSTALL_PREFIX@
+bindir=@CMAKE_INSTALL_FULL_BINDIR@
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+datarootdir=@CMAKE_INSTALL_FULL_DATAROOTDIR@
+datadir=@CMAKE_INSTALL_FULL_DATADIR@
+sysconfdir=@CMAKE_INSTALL_FULL_SYSCONFDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@
+package=@PROJECT_NAME@
+suffix=
+
+Name: @PROJECT_NAME@
+Description: @PROJECT_NAME@ Library
+Version: @PROJECT_VERSION@
+Requires:
+Libs: -L${libdir} -lisl
+Cflags: -I${includedir}
