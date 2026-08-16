@@ -509,15 +509,27 @@ install(TARGETS isl
 # file naming the configured one would send consumers to a different tree.
 set(ISL_PC ${CMAKE_CURRENT_BINARY_DIR}/isl.pc)
 install(CODE "
-    set(PKGCONFIG_PREFIX \"\${CMAKE_INSTALL_PREFIX}\")
+    # Baked in here; only the prefix is left to the install script, which is
+    # the one thing cmake --install --prefix can still change.
     set(PROJECT_NAME \"${PROJECT_NAME}\")
     set(PROJECT_VERSION \"${PROJECT_VERSION}\")
-    set(CMAKE_INSTALL_BINDIR \"${CMAKE_INSTALL_BINDIR}\")
-    set(CMAKE_INSTALL_LIBDIR \"${CMAKE_INSTALL_LIBDIR}\")
-    set(CMAKE_INSTALL_DATAROOTDIR \"${CMAKE_INSTALL_DATAROOTDIR}\")
-    set(CMAKE_INSTALL_DATADIR \"${CMAKE_INSTALL_DATADIR}\")
-    set(CMAKE_INSTALL_SYSCONFDIR \"${CMAKE_INSTALL_SYSCONFDIR}\")
-    set(CMAKE_INSTALL_INCLUDEDIR \"${CMAKE_INSTALL_INCLUDEDIR}\")
+    set(dir_BIN \"${CMAKE_INSTALL_BINDIR}\")
+    set(dir_LIB \"${CMAKE_INSTALL_LIBDIR}\")
+    set(dir_DATAROOT \"${CMAKE_INSTALL_DATAROOTDIR}\")
+    set(dir_DATA \"${CMAKE_INSTALL_DATADIR}\")
+    set(dir_SYSCONF \"${CMAKE_INSTALL_SYSCONFDIR}\")
+    set(dir_INCLUDE \"${CMAKE_INSTALL_INCLUDEDIR}\")
+
+    set(PKGCONFIG_PREFIX \"\${CMAKE_INSTALL_PREFIX}\")
+    foreach(d BIN LIB DATAROOT DATA SYSCONF INCLUDE)
+        # An absolute install directory is not under the prefix, so it must
+        # not be written relative to it.
+        if(IS_ABSOLUTE \"\${dir_\${d}}\")
+            set(PKGCONFIG_\${d}DIR \"\${dir_\${d}}\")
+        else()
+            set(PKGCONFIG_\${d}DIR \"\\\${prefix}/\${dir_\${d}}\")
+        endif()
+    endforeach()
     configure_file(\"${CMAKE_CURRENT_SOURCE_DIR}/isl.pc.in\" \"${ISL_PC}\" @ONLY)
 ")
 install(FILES ${ISL_PC} DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
