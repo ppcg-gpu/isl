@@ -1,0 +1,122 @@
+name: CI
+
+# This file belongs in the isl repository (github.com/ppcg-gpu/isl) as
+# .github/workflows/ci.yml.
+#
+# isl carries imath and extract_interface as submodules, so the checkout has
+# to be recursive.  On its own it registers 59 tests, against the 55 it
+# contributes to a ppcg build: the difference is the part of the suite that
+# PROJECT_IS_TOP_LEVEL keeps out of a consumer's build.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: LLVM ${{ matrix.llvm }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # apt.llvm.org publishes llvm-toolchain-jammy-13 through -22; there is
+        # no 11 or 12 for jammy.  isl itself is C, but extract_interface below
+        # it links against the Clang C++ libraries.
+        llvm: [13, 20, 22]
+    steps:
+      - name: Check out isl and its submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install LLVM ${{ matrix.llvm }} and the build dependencies
+        id: llvm
+        env:
+          LLVM_VERSION: ${{ matrix.llvm }}
+        run: |
+          set -euxo pipefail
+          sudo apt-get -qq update
+          sudo apt-get -qq --no-install-recommends install \
+              ca-certificates gpg wget
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+              | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_VERSION} main" \
+              | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get -qq update
+          # libgmp-dev is only needed by the imath compatibility tests below.
+          sudo apt-get -qq --no-install-recommends install \
+              make cmake ninja-build pkg-config python3 libgmp-dev \
+              "clang-${LLVM_VERSION}" \
+              "libclang-${LLVM_VERSION}-dev" \
+              "libclang-cpp${LLVM_VERSION}-dev" \
+              "llvm-${LLVM_VERSION}-dev"
+          sudo ln -sf "/usr/bin/llvm-config-${LLVM_VERSION}" /usr/bin/llvm-config
+          sudo ln -sf "/usr/bin/clang-${LLVM_VERSION}" /usr/bin/clang
+          sudo ln -sf "/usr/bin/clang++-${LLVM_VERSION}" /usr/bin/clang++
+          full=$(llvm-config --version)
+          if [ "${full%%.*}" != "${LLVM_VERSION}" ]; then
+              echo "expected LLVM ${LLVM_VERSION}, llvm-config reports ${full}" >&2
+              exit 1
+          fi
+          echo "version=${full}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        env:
+          # The full version, not the major one: FindLLVMClang compares the
+          # request against LLVM_PACKAGE_VERSION with VERSION_EQUAL, and
+          # 20.1.8 does not compare equal to 20.
+          LLVM_FULL: ${{ steps.llvm.outputs.version }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/prefix" \
+              -DLLVM_VERSION="${LLVM_FULL}" \
+              2>&1 | tee configure.log
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          # A build that lost the generated-bindings comparison or the imath
+          # tests would otherwise pass with a much smaller suite.
+          registered=$(ctest --test-dir build -N | sed -n 's/^Total Tests: //p')
+          echo "registered tests: ${registered}"
+          if [ "${registered}" -lt 59 ]; then
+              echo "expected at least 59 tests, got ${registered}" >&2
+              exit 1
+          fi
+          ctest --test-dir build -j"$(nproc)" --output-on-failure
+
+      - name: Install
+        run: |
+          set -euo pipefail
+          cmake --install build
+          find "${{ github.workspace }}/prefix" -type f | sort
+
+      - name: Collect the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-llvm${{ matrix.llvm }}
+          if-no-files-found: warn
+          path: |
+            configure.log
+            build/CMakeCache.txt
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/Testing/Temporary/LastTest.log
+            build/Testing/Temporary/LastTestsFailed.log
