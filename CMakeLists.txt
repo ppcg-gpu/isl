@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.21)
 project(isl VERSION 0.27 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
@@ -498,6 +498,18 @@ install(TARGETS isl
 # pkg-config metadata, the replacement for AX_CREATE_PKGCONFIG_INFO.  The
 # fields reproduce what that macro emitted: the imath backend contributes no
 # extra libraries or include paths, so Libs and Cflags only mention isl itself.
+#
+# Everything under the prefix is expressed relative to it, so retargeting
+# the file at a different location is a matter of changing prefix alone.
+# The prefix itself is the one the build was configured with, as it was
+# with configure; --install --prefix is not reflected here.
+foreach(dir BIN LIB DATAROOT DATA SYSCONF INCLUDE)
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_${dir}DIR}")
+        set(PKGCONFIG_${dir}DIR "${CMAKE_INSTALL_${dir}DIR}")
+    else()
+        set(PKGCONFIG_${dir}DIR "\${prefix}/${CMAKE_INSTALL_${dir}DIR}")
+    endif()
+endforeach()
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/isl.pc.in
     ${CMAKE_CURRENT_BINARY_DIR}/isl.pc
@@ -577,7 +589,11 @@ add_custom_command(
 )
 add_custom_target(gen_isl_py ALL DEPENDS ${INTERFACE_DIR}/isl.py)
 
-enable_testing()
+# BUILD_TESTING comes from CTest and has to actually switch the tests off,
+# so everything below is registered only when it is on.
+include(CTest)
+
+if(BUILD_TESTING)
 
 # Test programs that check the library itself
 add_test(NAME isl_test COMMAND $<TARGET_FILE:isl_test>)
@@ -598,12 +614,13 @@ add_test(NAME isl_test_cpp17_checked COMMAND $<TARGET_FILE:isl_test_cpp17_checke
 # of the intended intersect_range error.  Only that one translation unit is
 # compiled, so an unrelated build failure cannot make the test pass either;
 # isl_test_cpp above is the positive control that the same file does compile
-# without the macro.  The empty element comes from $<INSTALL_INTERFACE:include>,
-# which is not part of the build tree include path.
+# without the macro.  The include directories come from
+# the target rather than from a hand written list, so that a path going
+# stale cannot make the test pass for the wrong reason.
 set(CPP_FAILED_RSP ${CMAKE_CURRENT_BINARY_DIR}/isl_test_cpp_failed.rsp)
 file(GENERATE
     OUTPUT ${CPP_FAILED_RSP}
-    CONTENT "$<JOIN:$<LIST:TRANSFORM,$<LIST:FILTER,$<TARGET_PROPERTY:isl,INCLUDE_DIRECTORIES>,EXCLUDE,^$>,PREPEND,-I>,\n>\n"
+    CONTENT "-I$<JOIN:$<TARGET_PROPERTY:isl,INCLUDE_DIRECTORIES>,\n-I>\n"
 )
 
 add_test(NAME isl_test_cpp_failed
@@ -706,3 +723,5 @@ add_test(NAME isl_test_python.py
 set_tests_properties(isl_test_python.py PROPERTIES
     ENVIRONMENT "PYTHONPATH=${INTERFACE_DIR};ISL_DYLD_LIBRARY_PATH=$<TARGET_FILE_DIR:isl>;LD_LIBRARY_PATH=$<TARGET_FILE_DIR:isl>:$ENV{LD_LIBRARY_PATH}"
 )
+
+endif()
