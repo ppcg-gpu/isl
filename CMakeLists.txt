@@ -23,6 +23,25 @@ include(CMakePushCheckState)
 # Options that match configure.ac options
 option(SMALL_INT_OPT "Enable small integer optimization for IMATH" OFF)
 
+# GMP IS THE DEFAULT, and the reason is measured twice.
+#
+# The comment further down records the first measurement: 80% of a ppcg run
+# inside libimath, and SMALL_INT_OPT -- imath with a 32-bit fast path --
+# moving that to 45% while the wall clock did not move at all, 1973s against
+# 1989.7s. The conclusion drawn there was that the values do not fit in 32
+# bits and the question was whether they fit in 64, which is GMP's
+# single-limb path.
+#
+# It was never acted on: USE_GMP was read by the if() below but never
+# declared as an option, so it could not be switched on except by hand and
+# nobody did. A profile of the live scheduler a day later put 74.3% in
+# libimath again -- mp_int_gcd, mp_int_mul, mp_int_div, s_qdiv -- and a GMP
+# build on the same 402-node scop held 13.1 GiB where imath held 22.65.
+#
+# So it is declared, and it is on. imath remains reachable with -DUSE_GMP=OFF
+# for a host without GMP.
+option(USE_GMP "Use GMP for isl's exact arithmetic instead of imath" ON)
+
 # Set C standard
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -275,9 +294,28 @@ set(ISL_SOURCES
     isl_vertices.c
 )
 
-# The multiple precision backend.  isl is built against imath here, either
-# through the plain interface or through the small integer optimisation.
-if(SMALL_INT_OPT)
+# The multiple precision backend.
+#
+# isl is exact on purpose: the scheduler solves integer linear programs by
+# simplex over rationals, every pivot multiplies and divides the coefficients,
+# and inexact arithmetic there does not make a schedule slightly wrong -- it
+# makes a dependence disappear, which is a miscompilation.
+#
+# WHICH bignum is a build choice, and it was measured rather than inherited. A
+# profile of ppcg scheduling one transformer block put 80% of the run inside
+# libimath -- s_qdiv, mp_int_gcd, mp_int_sub -- with malloc beside them, because
+# imath keeps its digits on the heap and takes the general path for the number
+# 5. SMALL_INT_OPT, which is imath with a 32-bit fast path, moved that to 45%
+# and the wall clock not at all: 1973s against a 1989.7s control on the same
+# scop. So more than half the values do not fit in 32 bits, and the question is
+# whether they fit in 64 -- which is what GMP's single-limb path is, and it
+# allocates nothing for those.
+if(USE_GMP)
+    # isl_imath.c is in the unconditional list above and is imath's own
+    # bridge; with GMP selected its types do not exist
+    list(REMOVE_ITEM ISL_SOURCES isl_imath.c)
+    list(APPEND ISL_SOURCES isl_gmp.c isl_val_gmp.c)
+elseif(SMALL_INT_OPT)
     list(APPEND ISL_SOURCES isl_int_sioimath.c isl_val_sioimath.c)
 else()
     list(APPEND ISL_SOURCES isl_val_imath.c)
@@ -304,9 +342,13 @@ set_target_properties(isl PROPERTIES
     SOVERSION 23
 )
 
-target_compile_definitions(isl PUBLIC USE_IMATH_FOR_MP)
-
-target_link_libraries(isl PUBLIC imath)
+if(USE_GMP)
+    target_compile_definitions(isl PUBLIC USE_GMP_FOR_MP)
+    target_link_libraries(isl PUBLIC gmp)
+else()
+    target_compile_definitions(isl PUBLIC USE_IMATH_FOR_MP)
+    target_link_libraries(isl PUBLIC imath)
+endif()
 
 # A missing source file would otherwise only show up when some program
 # happens to use one of the symbols it defines.
