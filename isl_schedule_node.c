@@ -833,6 +833,25 @@ __isl_give isl_union_map *isl_schedule_node_get_prefix_schedule_relation(
 		isl_multi_union_pw_aff_free(data.prefix);
 		prefix = isl_union_map_from_domain(data.filter);
 	} else {
+		/* NARROW BEFORE BUILDING, not after.
+		 *
+		 * "data.prefix" is defined over every statement space of the
+		 * schedule, while "data.filter" is what reaches this node --
+		 * for a leaf, usually a single space.  Converting first built
+		 * one map per space of the whole program and then threw all
+		 * but one away, so a caller that asks this of every leaf pays
+		 * the size of the program at each one.  Dependence analysis
+		 * does exactly that, and on a scop of a few hundred
+		 * statements this was the largest single cost of the run.
+		 *
+		 * Restricting the domain first gives the same answer: the
+		 * conversion is per space and the filter selects spaces.  The
+		 * intersection is still applied afterwards, because a filter
+		 * can also constrain instances within a space, and it is
+		 * cheap once the map holds only the spaces that survive.
+		 */
+		data.prefix = isl_multi_union_pw_aff_intersect_domain(
+			data.prefix, isl_union_set_copy(data.filter));
 		prefix = isl_union_map_from_multi_union_pw_aff(data.prefix);
 		prefix = isl_union_map_intersect_domain(prefix, data.filter);
 	}

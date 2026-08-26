@@ -2738,6 +2738,21 @@ struct isl_scheduled_access {
  * "set_sink", "must" and "node" are only used inside collect_sink_source,
  * to keep track of the current node and
  * of what extract_sink_source needs to do.
+ *
+ * "n_group" is the number of distinct arrays the sources touch,
+ * "group_space" holds one range space per group and "group_first"
+ * together with "next_in_group" threads the sources of a group as a
+ * list in the order they were collected.
+ *
+ * A SINK ONLY EVER DEPENDS ON SOURCES TO THE SAME ARRAY, and grouping
+ * them by that array once is what keeps the search out of the square.
+ * add_matching_sources used to walk every source for every sink, taking
+ * the range space of each and comparing it, which is n_sink * n_source
+ * space comparisons with an allocation and a free per pair.  On a scop
+ * of a few hundred statements that was the single largest cost in the
+ * whole run.  Grouping costs n_source * n_group once and answers each
+ * sink in n_group comparisons plus the length of one list, and n_group
+ * is the number of arrays rather than the number of accesses.
  */
 struct isl_compute_flow_schedule_data {
 	isl_union_access_info *access;
@@ -2751,6 +2766,11 @@ struct isl_compute_flow_schedule_data {
 	int set_sink;
 	int must;
 	isl_schedule_node *node;
+
+	int n_group;
+	isl_space **group_space;
+	int *group_first;
+	int *next_in_group;
 };
 
 /* Align the parameters of all sinks with all sources.
@@ -2794,6 +2814,16 @@ static void isl_compute_flow_schedule_data_clear(
 	struct isl_compute_flow_schedule_data *data)
 {
 	int i;
+
+	for (i = 0; i < data->n_group; ++i)
+		isl_space_free(data->group_space[i]);
+	free(data->group_space);
+	free(data->group_first);
+	free(data->next_in_group);
+	data->group_space = NULL;
+	data->group_first = NULL;
+	data->next_in_group = NULL;
+	data->n_group = 0;
 
 	if (!data->sink)
 		return;
@@ -3016,32 +3046,110 @@ static isl_bool coscheduled_node(void *first, void *second)
 /* Add the scheduled sources from "data" that access
  * the same data space as "sink" to "access".
  */
+/* Group the collected sources by the array they access.
+ *
+ * Each group holds the sources whose range space is the same, threaded
+ * as a list in the order they were collected, because the order in
+ * which sources are handed to isl_access_info_add_source is the order
+ * in which they are considered and must not change.
+ *
+ * Returns 0 on success and -1 on error.
+ */
+static int group_sources_by_space(struct isl_compute_flow_schedule_data *data)
+{
+	int i, g;
+	int *last;
+
+	data->n_group = 0;
+	if (data->n_source == 0)
+		return 0;
+
+	data->group_space = isl_calloc_array(
+		isl_union_access_info_get_ctx(data->access),
+		isl_space *, data->n_source);
+	data->group_first = isl_alloc_array(
+		isl_union_access_info_get_ctx(data->access),
+		int, data->n_source);
+	data->next_in_group = isl_alloc_array(
+		isl_union_access_info_get_ctx(data->access),
+		int, data->n_source);
+	last = isl_alloc_array(isl_union_access_info_get_ctx(data->access),
+				int, data->n_source);
+	if (!data->group_space || !data->group_first ||
+	    !data->next_in_group || !last) {
+		free(last);
+		return -1;
+	}
+
+	for (i = 0; i < data->n_source; ++i) {
+		isl_space *space;
+
+		space = isl_space_range(isl_map_get_space(data->source[i].access));
+		if (!space) {
+			free(last);
+			return -1;
+		}
+		data->next_in_group[i] = -1;
+		for (g = 0; g < data->n_group; ++g) {
+			isl_bool eq;
+
+			eq = isl_space_is_equal(space, data->group_space[g]);
+			if (eq < 0) {
+				isl_space_free(space);
+				free(last);
+				return -1;
+			}
+			if (eq)
+				break;
+		}
+		if (g == data->n_group) {
+			data->group_space[g] = space;
+			data->group_first[g] = i;
+			data->n_group++;
+		} else {
+			isl_space_free(space);
+			data->next_in_group[last[g]] = i;
+		}
+		last[g] = i;
+	}
+
+	free(last);
+
+	return 0;
+}
+
+/* Add all sources that access the same array as "sink" to "access".
+ *
+ * The sources of one array were threaded into a list by
+ * group_sources_by_space, so the walk below visits exactly the sources
+ * the old one kept, in the same order, and looks at one space per group
+ * rather than one per source.
+ */
 static __isl_give isl_access_info *add_matching_sources(
 	__isl_take isl_access_info *access, struct isl_scheduled_access *sink,
 	struct isl_compute_flow_schedule_data *data)
 {
-	int i;
+	int g, i;
 	isl_space *space;
 
 	space = isl_space_range(isl_map_get_space(sink->access));
-	for (i = 0; i < data->n_source; ++i) {
-		struct isl_scheduled_access *source;
-		isl_space *source_space;
-		int eq;
+	for (g = 0; g < data->n_group; ++g) {
+		isl_bool eq;
 
-		source = &data->source[i];
-		source_space = isl_map_get_space(source->access);
-		source_space = isl_space_range(source_space);
-		eq = isl_space_is_equal(space, source_space);
-		isl_space_free(source_space);
-
-		if (!eq)
-			continue;
+		eq = isl_space_is_equal(space, data->group_space[g]);
 		if (eq < 0)
 			goto error;
+		if (!eq)
+			continue;
+		for (i = data->group_first[g]; i >= 0;
+		     i = data->next_in_group[i]) {
+			struct isl_scheduled_access *source = &data->source[i];
 
-		access = isl_access_info_add_source(access,
-		    isl_map_copy(source->access), source->must, source->node);
+			access = isl_access_info_add_source(access,
+			    isl_map_copy(source->access), source->must,
+			    source->node);
+		}
+		break;
 	}
 
 	isl_space_free(space);
@@ -3169,6 +3277,12 @@ static __isl_give isl_union_flow *compute_flow_schedule(
 	flow = isl_union_flow_alloc(space);
 
 	isl_compute_flow_schedule_data_align_params(&data);
+
+	/* After the parameters are aligned, so that the spaces grouped on
+	 * are the ones the comparison in add_matching_sources would see.
+	 */
+	if (group_sources_by_space(&data) < 0)
+		goto error;
 
 	for (i = 0; i < data.n_sink; ++i)
 		flow = compute_single_flow(flow, &data.sink[i], &data);
