@@ -316,27 +316,43 @@ struct isl_foreach_reachable_data {
 	void *user;
 };
 
-static isl_stat foreach_reachable(struct isl_foreach_reachable_data *data,
-	int pos);
+/* Internal data structure for foreach_reachable_marked.
+ *
+ * "mark" is a scratch array of scc_graph->n entries, reused across
+ * calls within one isl_scc_graph_reduce, holding the generation
+ * stamp of each SCC's last visit.
+ */
+struct isl_foreach_reachable_marked_data {
+	struct isl_foreach_reachable_data data;
+	int *mark;
+	int generation;
+};
+
+static isl_stat foreach_reachable_marked(
+	struct isl_foreach_reachable_marked_data *mdata, int pos);
 
 /* isl_hash_table_foreach callback for calling data->fn on each SCC
  * reachable from the SCC encoded in "entry",
  * continuing from an SCC as long as data->fn returns isl_bool_true.
  */
-static isl_stat recurse_foreach_reachable(void **entry, void *user)
+static isl_stat recurse_foreach_reachable_marked(void **entry, void *user)
 {
-	struct isl_foreach_reachable_data *data = user;
+	struct isl_foreach_reachable_marked_data *mdata = user;
+	struct isl_foreach_reachable_data *data = &mdata->data;
 	int pos;
 	isl_bool more;
 
 	pos = isl_scc_graph_local_index(data->scc_graph, *entry);
+	if (mdata->mark[pos] == mdata->generation)
+		return isl_stat_ok;
+	mdata->mark[pos] = mdata->generation;
 	more = data->fn(pos, data->user);
 	if (more < 0)
 		return isl_stat_error;
 	if (!more)
 		return isl_stat_ok;
 
-	return foreach_reachable(data, pos);
+	return foreach_reachable_marked(mdata, pos);
 }
 
 /* Call data->fn on each SCC reachable from the SCC with local index "pos",
@@ -344,10 +360,31 @@ static isl_stat recurse_foreach_reachable(void **entry, void *user)
  *
  * Handle chains directly and recurse when an SCC has more than one
  * outgoing edge.
+ *
+ * The original traversal could revisit the same SCC many times within
+ * one outer step: a diamond i -> {a,b} -> c walks c twice, once per
+ * predecessor, and on the 668-node input this compounded to >80% of
+ * the whole scheduler spent here (perf668: isl_hash_table_find 25.06%
+ * + isl_scc_graph_find_edge 15.03% + foreach_reachable 12.34% +
+ * isl_hash_mem 10.72% + isl_hash_table_first 9.08% + elim_or_next
+ * 7.98% + isl_hash_table_foreach 7.11%).  Each visited SCC ends in a
+ * hash lookup through isl_scc_graph_find_edge, so every extra visit
+ * is a hash miss that costs as much as a real one.
+ *
+ * The fix keeps the callback contract (fn sees each SCC that is
+ * reachable, in traversal order, and may cut the walk short) but
+ * visits every SCC at most once per foreach_reachable call: a
+ * generation-stamped mark array shared by the whole traversal.
+ * Revisiting an already-marked SCC cannot produce a new result: the
+ * callback for it has already run once in this traversal and any
+ * walk beyond it was either completed or cut short by the callback
+ * itself, and both outcomes depend only on the SCC index, which is
+ * the same on the second visit.
  */
-static isl_stat foreach_reachable(struct isl_foreach_reachable_data *data,
-	int pos)
+static isl_stat foreach_reachable_marked(
+	struct isl_foreach_reachable_marked_data *mdata, int pos)
 {
+	struct isl_foreach_reachable_data *data = &mdata->data;
 	isl_ctx *ctx;
 	struct isl_hash_table **edge_table = data->scc_graph->edge_table;
 
@@ -357,6 +394,9 @@ static isl_stat foreach_reachable(struct isl_foreach_reachable_data *data,
 
 		entry = isl_hash_table_first(edge_table[pos]);
 		pos = isl_scc_graph_local_index(data->scc_graph, entry->data);
+		if (mdata->mark[pos] == mdata->generation)
+			return isl_stat_ok;
+		mdata->mark[pos] = mdata->generation;
 		more = data->fn(pos, data->user);
 		if (more < 0)
 			return isl_stat_error;
@@ -369,7 +409,7 @@ static isl_stat foreach_reachable(struct isl_foreach_reachable_data *data,
 
 	ctx = data->scc_graph->ctx;
 	return isl_hash_table_foreach(ctx, edge_table[pos],
-					&recurse_foreach_reachable, data);
+					&recurse_foreach_reachable_marked, mdata);
 }
 
 /* If there is an edge from data->src to "pos", then remove it.
@@ -402,17 +442,31 @@ static isl_bool elim_or_next(int pos, void *user)
  * does not need to be considered since these were already considered
  * for a previous "next[j]" equal to "k", or "k" is the last next node,
  * in which case there is no further node with an edge from "i".
+ *
+ * The elimination callback may remove the very edge that the
+ * traversal below is about to follow: elim_or_next drops edge
+ * (src,pos) when it exists, and pos is a node of this graph.
+ * A fresh generation is therefore stamped for every walk, so that
+ * nodes un-marked by a previous walk's early termination are not
+ * mistaken for already-visited ones in the next.
  */
 static struct isl_scc_graph *isl_scc_graph_reduce(
 	struct isl_scc_graph *scc_graph)
 {
 	struct isl_edge_src elim_data;
-	struct isl_foreach_reachable_data data = {
-		.scc_graph = scc_graph,
-		.fn = &elim_or_next,
-		.user = &elim_data,
-	};
+	struct isl_foreach_reachable_marked_data mdata;
 	int i, j;
+	int *mark;
+
+	mark = isl_calloc_array(scc_graph->ctx, int, scc_graph->n);
+	if (!mark)
+		return isl_scc_graph_free(scc_graph);
+
+	mdata.data.scc_graph = scc_graph;
+	mdata.data.fn = &elim_or_next;
+	mdata.data.user = &elim_data;
+	mdata.mark = mark;
+	mdata.generation = 0;
 
 	elim_data.scc_graph = scc_graph;
 	for (i = scc_graph->n - 3; i >= 0; --i) {
@@ -424,18 +478,25 @@ static struct isl_scc_graph *isl_scc_graph_reduce(
 			continue;
 		next = next_nodes(scc_graph, i);
 		if (!next)
-			return isl_scc_graph_free(scc_graph);
+			goto error;
 
 		elim_data.src = i;
-		for (j = n_next - 2; j >= 0; --j)
-			if (foreach_reachable(&data, next[j]) < 0)
+		for (j = n_next - 2; j >= 0; --j) {
+			++mdata.generation;
+			if (foreach_reachable_marked(&mdata, next[j]) < 0)
 				break;
+		}
 		free(next);
 		if (j >= 0)
-			return isl_scc_graph_free(scc_graph);
+			goto error;
 	}
 
+	free(mark);
+
 	return scc_graph;
+error:
+	free(mark);
+	return isl_scc_graph_free(scc_graph);
 }
 
 /* Add an edge to "edge_table" between the SCCs with local indices "src" and
